@@ -1,45 +1,76 @@
 from .Pawn import Pawn, Direction
 import pygame
-import random
+import copy
 
 pygame.init()
 
-SPEED = 120
 
 class QuoridorGame:
-    def __init__(self, maze=None):
+    def __init__(self, name):
         # Setting up Screen
-        self.display = pygame.display.set_mode((530, 530))
-        clock = pygame.time.Clock()
+        self.display = pygame.display.set_mode((550, 600))
+        self.clock = pygame.time.Clock()
 
         # Game Variables
+        self.name = name
+        self.maxTurn = 100
         self.n_turns = 0
-        self.maze = maze
+        self.maze = list()
+        self.levels = list()
+        self.level = 0
+        self.currLevel = 0
+        self.speed = 1
+        self.selection = 0
         self.activeWalls = list()
         self.highlighted = list()
         self.playerPawn = None
         self.opponentPawn = None
         self.playerTurn = True
-        self.nope = False
-        self.clock = pygame.time.Clock()
+        self.exit = False
+        self.maxGame = 0
+        self.epsilonStart = 0
+        if self.name == "Move_Mode":
+            with open(r"./Game/MoveLevels.txt", "r") as File:
+                for line in File:
+                    # Maze, ActiveWalls, MaxTurn, MaxGame, Epsilon
+                    maze = eval(line.strip("\n"))
+                    activeWalls = eval(File.readline().strip("\n"))
+                    maxTurn = eval(File.readline().strip("\n"))
+                    maxGame = eval(File.readline().strip("\n"))
+                    epsilon = eval(File.readline().strip("\n"))
+                    level = (maze, activeWalls, maxTurn, maxGame, epsilon)
+                    self.levels.append(level)
+        else:
+            with open(r"./Game/WallLevels.txt", "r") as File:
+                for line in File:
+                    # Maze, ActiveWalls, MaxTurn, MaxGame, Epsilon
+                    maze = eval(line.strip("\n"))
+                    activeWalls = eval(File.readline().strip("\n"))
+                    maxTurn = eval(File.readline().strip("\n"))
+                    maxGame = eval(File.readline().strip("\n"))
+                    epsilon = eval(File.readline().strip("\n"))
+                    level = (maze, activeWalls, maxTurn, maxGame, epsilon)
+                    self.levels.append(level)
         self.reset()
+        self.start_dis = self.playerPawn.closestPathLength()
+        self.opp_start_dis = self.opponentPawn.closestPathLength()
 
     def reset(self):
         # Create Maze
         # Vertical Wall, Horizontal Wall
-        if self.maze is None:
-            self.maze = [[[0, 0] for _ in range(9)] for __ in range(9)]
-        else:
-            for i in range(len(self.maze)):
-                for j in range(len(self.maze[0])):
-                    self.maze[i][j] = [0, 0]
-        self.activeWalls = []
+        self.currLevel = self.level
+        levelPieces = self.levels[self.level]
+        self.maze[:] = copy.deepcopy(levelPieces[0])
+        self.activeWalls[:] = copy.deepcopy(levelPieces[1])
+        self.maxTurn = levelPieces[2]
+        self.maxGame = levelPieces[3]
+        self.epsilonStart = levelPieces[4]
         self.n_turns = 0
         self.playerTurn = True
 
         if self.playerPawn is None:
-            self.playerPawn = Pawn("Player", 4, 8, self.maze)
-            self.opponentPawn = Pawn("Opponent", 4, 0, self.maze)
+            self.playerPawn = Pawn("Player", 4, 8, self.maze, self.activeWalls)
+            self.opponentPawn = Pawn("Opponent", 4, 0, self.maze, self.activeWalls)
             self.playerPawn.setOpponent(self.opponentPawn)
             self.opponentPawn.setOpponent(self.playerPawn)
         else:
@@ -57,36 +88,9 @@ class QuoridorGame:
         """Plays the given Action and returns (reward,gameOver, score)"""
         # Return Values
         reward = 0
-        score = 0
+        playerScore = 0
+        oppScore = 0
         gameOver = False
-        # Action Validation
-        if len(action) == 2:
-            try:
-                action = Direction(action)
-            except ValueError:
-                reward -= 200
-                return reward, gameOver, score
-            moves = self.playerPawn.possibleMoves() if self.playerTurn else self.opponentPawn.possibleMoves()
-            if action not in moves:
-                reward -= 50
-                return reward, gameOver, score
-        else:
-            walls = self.playerPawn.possibleWalls() if self.playerTurn else self.opponentPawn.possibleWalls()
-            wallLeft = self.playerPawn.remainingWalls if self.playerTurn else self.opponentPawn.remainingWalls
-            if wallLeft < 0:
-                reward -= 100
-                return reward, gameOver, score
-            if action not in walls:
-                reward -= 30
-                return reward, gameOver, score
-
-            self.playerPawn.placeWall(action)
-            if not (self.playerPawn.canReachEnd() and self.opponentPawn.canReachEnd()):
-                reward -= 20
-                self.playerPawn.removeWall(action)
-                return reward, gameOver, score
-            self.playerPawn.removeWall(action)
-
 
         # Collect inputs
         for event in pygame.event.get():
@@ -94,68 +98,100 @@ class QuoridorGame:
                 pygame.quit()
                 return True
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_LEFT:
-                    action = Direction.LEFT
-                elif event.key == pygame.K_RIGHT:
-                    action = Direction.RIGHT
-                elif event.key == pygame.K_UP:
-                    action = Direction.UP
-                elif event.key == pygame.K_DOWN:
-                    action = Direction.DOWN
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                self.playerTurn = not self.playerTurn
+                if event.key == pygame.K_ESCAPE:
+                    self.exit = True
 
+                changeVal = 0
+                if event.key == pygame.K_SPACE:
+                    self.speed = 20
+                if event.key == pygame.K_TAB:
+                    self.selection = (self.selection + 1) % 3
+                if event.key == pygame.K_UP and self.selection == 0:
+                    changeVal += 10
+                if event.key == pygame.K_LEFT:
+                    changeVal -= 1
+                if event.key == pygame.K_RIGHT:
+                    changeVal += 1
+                if event.key == pygame.K_DOWN and self.selection == 0:
+                    changeVal -= 10
+                if self.selection == 0:
+                    self.speed += changeVal
+                elif self.selection == 1:
+                    self.level += changeVal
+                elif self.selection == 2:
+                    self.maxTurn += changeVal
         old_dis = self.playerPawn.closestPathLength() if self.playerTurn else self.opponentPawn.closestPathLength()
         old_opp_dis = self.opponentPawn.closestPathLength() if self.playerTurn else self.playerPawn.closestPathLength()
 
         # Play Action
-        if action == "Test":
-            pass
-        elif self.playerTurn:
-            if isinstance(action, Direction):
+        if isinstance(action, Direction):
+            if self.playerTurn:
                 self.playerPawn.move(action)
             else:
-                self.playerPawn.placeWall(action)
-        else:
-            if isinstance(action, Direction):
                 self.opponentPawn.move(action)
-            else:
+        else:
+            if self.playerTurn:
+                self.playerPawn.placeWall(action)
                 self.activeWalls.append(action)
+            else:
                 self.opponentPawn.placeWall(action)
+                self.activeWalls.append(action)
         new_dis = self.playerPawn.closestPathLength() if self.playerTurn else self.opponentPawn.closestPathLength()
         new_opp_dis = self.opponentPawn.closestPathLength() if self.playerTurn else self.playerPawn.closestPathLength()
 
         # Rewards
-        if new_opp_dis - new_dis > 0 and isinstance(action, Direction):
-            reward += 15
-        if new_dis - new_opp_dis > 0 and not isinstance(action, Direction):
-            reward += 15
-
-        reward += 10 if self.playerPawn.remainingWalls > self.opponentPawn.remainingWalls else 0
-        reward += (old_dis - new_dis) * 30
-        reward += (new_opp_dis - old_opp_dis) * 20
+        if isinstance(action, Direction):
+            reward += (old_dis - new_dis if self.playerTurn else old_opp_dis - new_opp_dis) * 10
+        else:
+            reward += (new_opp_dis - old_opp_dis if self.playerTurn else new_dis - old_dis) * 10
 
         # Check if one of the Pawns reached their target
-        if self.playerPawn.isTargetReached() or self.opponentPawn.isTargetReached() or self.n_turns > 150:
-            if self.n_turns < 30:
-                reward += 30
-                score += 100
-            reward += 15
-            score += 100
-            score += new_opp_dis * 40
-            score += (self.playerPawn.remainingWalls if self.playerTurn else self.opponentPawn.remainingWalls) * 10
-            score = 0 if self.n_turns > 150 else score
+        if self.playerPawn.isTargetReached() or self.opponentPawn.isTargetReached() or self.n_turns > self.maxTurn:
+            if isinstance(action, Direction):
+                playerScore = 100 - (self.n_turns - (self.start_dis + self.playerPawn.closestPathLength()))
+                oppScore = 100 - (self.opp_start_dis + 0.5 + self.opponentPawn.closestPathLength()) * 2
+            else:
+                playerScore = (self.opponentPawn.closestPathLength() - self.opp_start_dis)*10
+                oppScore = (self.playerPawn.closestPathLength() - self.start_dis)*10
+            print(len(self.activeWalls))
             gameOver = True
         # Turn Calculations
         self.n_turns += 0.5
         self.playerTurn = not self.playerTurn
         # Update UI
         self._updateUI()
-        self.clock.tick(SPEED)
-        return reward, gameOver, score
+        self.clock.tick(self.speed)
+        return reward, gameOver, playerScore, oppScore
 
     def _updateUI(self):
         self.display.fill((0, 255, 255))
+        frameColor = (50, 79, 90)
+        font_color = (255, 0, 0)
+        text_highlight = (255, 0, 255)
+        # --Frame
+        # -Top Up
+        pygame.draw.rect(self.display, frameColor, (0, 0, 550, 10))
+        # -Top Down
+        pygame.draw.rect(self.display, frameColor, (0, 50, 550, 10))
+        # -Left
+        pygame.draw.rect(self.display, frameColor, (0, 0, 10, 600))
+        # -Right
+        pygame.draw.rect(self.display, frameColor, (540, 0, 10, 600))
+        # -Bottom
+        pygame.draw.rect(self.display, frameColor, (0, 590, 550, 10))
+        # --Info
+        font = pygame.font.Font(None, 32)
+        speed = rf"SPEED: {self.speed}"
+        level = rf"LEVEL(C\N\M): {self.currLevel} {self.level} {len(self.levels)-1}"
+        turn = rf"MAX_TURN: {self.maxTurn}"
+
+        speed_text = font.render(speed, True, text_highlight if self.selection == 0 else font_color)
+        levels_text = font.render(level, True, text_highlight if self.selection == 1 else font_color)
+        turns_text = font.render(turn, True, text_highlight if self.selection == 2 else font_color)
+        self.display.blit(speed_text, (10, 10))
+        self.display.blit(levels_text, (150, 10))
+        self.display.blit(turns_text, (370, 10))
+
         # Squares
         self.highlighted.clear()
         moves = self.playerPawn.possibleMoves() if self.playerTurn else self.opponentPawn.possibleMoves()
@@ -163,27 +199,27 @@ class QuoridorGame:
             self.highlighted.append(self.playerPawn.tempMove(move)
                                     if self.playerTurn else self.opponentPawn.tempMove(move))
         # Walls
-        x, y = 0, 0
+        x, y = 10, 60
         for id_Y, row in enumerate(self.maze):
             for id_X, cell in enumerate(row):
                 if (id_X, id_Y) in self.highlighted:
                     pygame.draw.rect(self.display, (243, 255, 106), (x, y, 50, 50))
                 verColor = (125, 164, 180) if cell[0] == 0 else (95, 33, 45)
                 horColor = (125, 164, 180) if cell[1] == 0 else (95, 33, 45)
-                if x != 480:
+                if id_X != len(self.maze[0]) - 1:
                     pygame.draw.rect(self.display, verColor, (x + 50, y, 10, 50))
-                if y != 480:
+                if id_Y != len(self.maze) - 1:
                     pygame.draw.rect(self.display, horColor, (x, y + 50, 50, 10))
                 x += 60
-            x = 0
+            x = 10
             y += 60
+            
         # Pawns
-        pawn_x, pawn_y = self.playerPawn.x * 60 + 25, self.playerPawn.y * 60 + 25
+        pawn_x, pawn_y = self.playerPawn.x * 60 + 35, self.playerPawn.y * 60 + 85
         pygame.draw.circle(self.display, self.playerPawn.color, (pawn_x, pawn_y), 15)
-        pawn_x, pawn_y = self.opponentPawn.x * 60 + 25, self.opponentPawn.y * 60 + 25
+        pawn_x, pawn_y = self.opponentPawn.x * 60 + 35, self.opponentPawn.y * 60 + 85
         pygame.draw.circle(self.display, self.opponentPawn.color, (pawn_x, pawn_y), 15)
         pygame.display.flip()
-
 
 if __name__ == "__main__":
     game = QuoridorGame()

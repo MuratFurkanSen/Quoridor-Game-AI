@@ -1,12 +1,12 @@
+import os
 import random
+import time
 from collections import deque
 
-from pygments.lexers import pawn
-
 from Game.Game import QuoridorGame
-from Model import QLinearNet, QTrainer
+from AI.Model import QLinearNet, QTrainer
 from Game.Pawn import Direction
-from helper import plot
+from AI.helper import plot
 import torch
 
 MAX_MEMORY = 100_000
@@ -26,9 +26,23 @@ class Agent:
         self.n_games = 0
         self.epsilon = 0
         self.gamma = 0.9
-        self.memory = deque(maxlen=MAX_MEMORY)
-        self.model = QLinearNet(68, 256, 512, 256, 16)
-        self.trainer = QTrainer(self.model, LR, self.gamma)
+        self.model = QLinearNet(name, 68, 64, 128, 64, 1)
+        if not os.path.exists(f"model_saves/Move_{name}_Model.pth"):
+            self.memory = deque(maxlen=MAX_MEMORY)
+        else:
+            checkpoint = torch.load(f"model_saves/Move_{name}_Model.pth")
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.memory = checkpoint['memory']
+        self.model = self.model.to(self.model.device)
+        self.trainer = QTrainer(self.model, LR, self.gamma, self.model.device)
+
+        self.Move_AI = QLinearNet(name, 68, 64, 128, 64, 12)
+        self.Wall_AI = QLinearNet(name, 68, 64, 128, 64, 128)
+        self.Move_AI.load_state_dict(torch.load(f"{name}_Move.pth", weights_only=False))
+        self.Wall_AI.load_state_dict(torch.load(f"{name}_Wall.pth", weights_only=False))
+        self.Move_AI.eval()
+        self.Wall_AI.eval()
 
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
@@ -75,37 +89,45 @@ class Agent:
          --PlaceWall
          -WallID'S
         """
-        self.epsilon = 256 - self.n_games
+        self.epsilon = 2 - self.n_games
         if random.randint(0, 256) < self.epsilon:
             if random.randint(0, 1) and self.pawn.remainingWalls > 0:
                 move = random.choice(self.pawn.possibleWalls())
             else:
                 move = random.choice(self.pawn.possibleMoves()).value
         else:
-            """
-            --ActionSet in Binary
-            0,1 = Move X
-            2 = Move X + or -
-            3,4 = Move Y
-            5 = Move Y + or -
-            6, 7, 8, 9 = PlaceWall X
-            10, 11, 12, 13 = PlaceWall Y
-            14 = PlaceWall Alignment
-            15 = Decision Between Move and PlaceWall"""
-            state0 = torch.tensor(state, dtype=torch.float)
-
+            state0 = torch.tensor(state, dtype=torch.float).to(self.model.device)
             prediction = self.model(state0).tolist()
-            prediction = list(map(lambda x: "1" if x >= 0.5 else "0", prediction))
-            if int(prediction[-1]):
-                move_x = int("".join(prediction[:2])*1 if prediction[2] else -1, 2)
-                move_y = int("".join(prediction[3:5])*1 if prediction[5] else -1, 2)
-                move = (move_x, move_y)
+            if round(prediction[0]):
+                move_pred = self.model(state0)
+                # Eliminate Invalid Actions
+                valid_pred = move_pred * self.createMoveMask()
+                move_index = torch.argmax(valid_pred).item()
+                action = [*Direction][move_index]
             else:
-                wall_x = int("".join(prediction[6:10]), 2)
-                wall_y = int("".join(prediction[10:14]), 2)
-                alg = int(prediction[14])
-                move = (wall_x, wall_y, alg)
-        return move
+                state0 = torch.tensor(state, dtype=torch.float).to(self.model.device)
+                prediction = self.model(state0)
+                # Eliminate Invalid Actions
+                q_values_valid = prediction * self.createWallMask()
+                Wall_ID = torch.argmax(q_values_valid).item()
+                action = (Wall_ID // 16, (Wall_ID % 16) // 2, Wall_ID % 2)
+            return action
+
+    def createMoveMask(self):
+        valid_moves = self.pawn.possibleMoves()
+        mask = torch.zeros(len(Direction)).to(self.model.device)
+        for index, move in enumerate(Direction):
+            if move in valid_moves:
+                mask[index] = 1
+        return mask
+
+    def createWallMask(self):
+        # Has a bug indices can be same with this method
+        mask = torch.ones(128).to(self.model.device)
+        for wall in self.activeWalls:
+            index = wall[0]*9 + wall[1]+wall[2]
+            mask[index] = 0
+        return mask
 
 
 def train():
@@ -159,16 +181,17 @@ def train():
             opponentAgent.n_games += 1
             playerAgent.train_long_memory()
             opponentAgent.train_long_memory()
+            print(time.ctime())
             print(f"{playerAgent.n_games}. Game")
             print(f"Player Score: {playerScore}")
             print(f"Opponent Score: {opponentScore}")
 
-            if playerScore > playerRecord:
+            if playerScore > playerRecord or playerAgent.n_games%5==0:
                 playerRecord = playerScore
-                playerAgent.model.save("Player_Model.pth")
-            if opponentScore > opponentRecord:
+                playerAgent.model.save(f"Player_Model-{playerAgent.n_games}.pth")
+            if opponentScore > opponentRecord or opponentAgent.n_games%5==0:
                 opponentRecord = opponentScore
-                opponentAgent.model.save("Opponent_Model.pth")
+                opponentAgent.model.save(f"Opponent_Model-{opponentAgent.n_games}.pth")
             playerScores.append(playerScore)
             opponentScores.append(opponentScore)
 
@@ -180,6 +203,21 @@ def train():
             opponentMeanScores.append(opponentMeanScore)
 
             plot(playerScores, playerMeanScores, opponentScores, opponentMeanScores)
+            if game.exit:
+                model = playerAgent.model
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': model.optimizer.state_dict(),
+                    'memory': playerAgent.memory
+                }, 'model_saves/Player_Model.pth')
+
+                model = opponentAgent.model
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': model.optimizer.state_dict(),
+                    'memory': opponentAgent.memory
+                }, 'model_saves/Opponent_Model.pth')
+                quit()
 
 
 if __name__ == '__main__':

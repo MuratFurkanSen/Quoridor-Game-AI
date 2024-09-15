@@ -19,7 +19,7 @@ class Direction(Enum):
 
 
 class Pawn:
-    def __init__(self, name, x, y, maze):
+    def __init__(self, name, x, y, maze, activeWalls):
         self.name = name
         self.x = x
         self.y = y
@@ -29,6 +29,7 @@ class Pawn:
         self.target = 0 if name == "Player" else 8
         self.opponent = None
         self.nope = False
+        self.activeWalls = activeWalls
 
     def setOpponent(self, opponent):
         self.opponent = opponent
@@ -139,10 +140,18 @@ class Pawn:
             return walls
         for i in range(len(self.maze) - 1):
             for j in range(len(self.maze[i]) - 1):
-                if self.maze[i][j][0] == self.maze[i + 1][j][0] == 0:
-                    walls.append((i, j, 0))
-                if self.maze[i][j][1] == self.maze[i][j + 1][1] == 0:
-                    walls.append((i, j, 1))
+                if self.maze[i][j][0] == self.maze[i + 1][j][0] == 0 and (i, j, 1) not in self.activeWalls:
+                    self.placeWall((i, j, 0))
+                    if self.canReachEnd() and self.opponent.canReachEnd:
+                        walls.append((i, j, 0))
+                    self.removeWall((i, j, 0))
+                if self.maze[i][j][1] == self.maze[i][j + 1][1] == 0 and (i, j, 0) not in self.activeWalls:
+                    self.placeWall((i, j, 1))
+                    if self.canReachEnd() and self.opponent.canReachEnd():
+                        walls.append((i, j, 1))
+                    self.removeWall((i, j, 1))
+                if not (self.canReachEnd() and self.opponent.canReachEnd()):
+                    print("Shit")
         return walls
 
     def placeWall(self, wallID):
@@ -168,8 +177,8 @@ class Pawn:
     def canReachEnd(self):
         visitedCells = [(self.x, self.y)]
         currentPath = [(self.x, self.y)]
-        virPawn = Pawn("Virtual", self.x, self.y, self.maze)
-        virPawn.setOpponent(Pawn("Virtual Opponent", self.opponent.x, self.opponent.y, self.maze))
+        virPawn = Pawn("Virtual", self.x, self.y, self.maze, self.activeWalls)
+        virPawn.setOpponent(Pawn("Virtual Opponent", self.opponent.x, self.opponent.y, self.maze, self.activeWalls))
         while True:
             moves = virPawn.possibleMoves()
             isMoved = False
